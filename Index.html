@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Browser Object Detection with Logging</title>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      text-align: center;
+      background: #f8f9fa;
+      padding: 20px;
+    }
+    video, canvas {
+      max-width: 600px;
+      width: 100%;
+      border: 2px solid #333;
+      border-radius: 10px;
+      margin-bottom: 10px;
+    }
+    #controls {
+      margin-top: 15px;
+    }
+    button {
+      padding: 10px 20px;
+      font-size: 16px;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      background: #4CAF50;
+      color: white;
+      transition: background 0.3s;
+    }
+    button:hover {
+      background: #45a049;
+    }
+    #error {
+      color: red;
+      font-weight: bold;
+      margin-top: 15px;
+    }
+  </style>
+</head>
+<body>
+  <h2>🎥 Live Object Detection</h2>
+  <video id="video" autoplay playsinline width="600" height="450"></video>
+  <canvas id="canvas" width="600" height="450"></canvas>
+
+  <div id="controls">
+    <button onclick="exportData()">⬇️ Download Detection Log</button>
+  </div>
+  <div id="error"></div>
+
+  <script>
+    const targetObjects = ["tv"]; 
+    let detectionLog = [];
+    let seenObjects = new Set();
+
+    
+    
+    const panelDatabase = [
+      {
+        type: "IPS",
+        brightnessRange: [100, 200],
+        contrast: "Medium",
+        colorAccuracy: "High",
+        description: "Good color consistency, wide viewing angles",
+        brand: "LG",
+        cost: "100-200"
+      },
+      {
+        type: "VA",
+        brightnessRange: [50, 150],
+        contrast: "High",
+        colorAccuracy: "Medium",
+        description: "Excellent contrast, deeper blacks, slower response.",
+        brand: "Samsung",
+        cost: "100-175"
+      },
+      {
+        type: "OLED",
+        brightnessRange: [150, 255],
+        contrast: "Very High",
+        colorAccuracy: "Excellent",
+        description: "Perfect blacks, vivid colors, expensive technology.",
+        brand: "Sony",
+        cost: "150-250"
+      },
+      {
+       type: "LED",
+       brightnessRange: [80, 180],
+       contrast: "Medium-High",
+       colorAccuracy: "Medium",
+       description: "Standard LCD panel with LED backlight, affordable and bright.",
+       brand: "BOE",
+       cost: "150-275"
+      }   ];
+
+    // Color and brightness group 
+
+    function CharColor(color){
+      const rgb=color.match(/\d+/g).map(Number);
+      const brightness=(rgb[0]+rgb[1]+rgb[2])/3;
+      if (brightness<40) return "black screen issue";
+      if (brightness<100) return "dim display";
+      if (brightness<200) return "too bright";
+      if (rgb[2] > rgb[0] + 40 && rgb[2] > rgb[1] + 40) return "Blue Tint";
+      if (rgb[0] > rgb[2] + 40 && rgb[0] > rgb[1] + 40) return "Red Tint";
+      return "Normal display";
+
+
+      
+
+
+    }
+
+    // Get average color inside bounding box
+    function getAverageColor(ctx, x, y, w, h) {
+      const imageData = ctx.getImageData(x, y, w, h);
+      let r = 0, g = 0, b = 0;
+      const pixels = imageData.data.length / 4;
+
+      for (let i = 0; i < imageData.data.length; i += 4) {
+        r += imageData.data[i];
+        g += imageData.data[i + 1];
+        b += imageData.data[i + 2];
+      }
+
+      r = Math.floor(r / pixels);
+      g = Math.floor(g / pixels);
+      b = Math.floor(b / pixels);
+
+      return `rgb(${r},${g},${b})`;
+    }
+
+    // Lookup panel type from brand
+    function findPanelType(brightness) {
+      for (const panel of panelDatabase) {
+        // 👇 Here we access brightnessRange[0] and brightnessRange[1]
+        if (brightness >= panel.brightnessRange[0] && brightness <= panel.brightnessRange[1]) {
+          return panel;
+        }
+      }
+      return { type: "Unknown", description: "No matching data found." };
+}
+
+    // Setup camera
+    async function setupCamera() {
+      const video = document.getElementById('video');
+      const errorMsg = document.getElementById('error');
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+        video.srcObject = stream;
+        return new Promise(res => video.onloadedmetadata = () => res(video));
+      } catch (err) {
+        errorMsg.textContent = " Could not access the camera. Allow permissions & use http://localhost instead of file://";
+        throw err;
+      }
+    }
+
+    async function main() {
+      const video = await setupCamera();
+      const model = await cocoSsd.load();
+      const canvas = document.getElementById('canvas');
+      const ctx = canvas.getContext('2d');
+
+      async function detect() {
+        try {
+          const preds = await model.detect(video);
+
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+          ctx.font = "16px Arial";
+          ctx.strokeStyle = "red";
+          ctx.lineWidth = 2;
+          ctx.fillStyle = "red";
+
+          let currentFrameObjects = new Set();
+
+          preds.forEach(p => {
+            if (targetObjects.includes(p.class)) {
+              const [x, y, w, h] = p.bbox;
+
+              // Draw bounding box
+              ctx.beginPath();
+              ctx.rect(x, y, w, h);
+              ctx.stroke();
+              ctx.fillText(`${p.class} ${(p.score * 100).toFixed(1)}%`, x, y > 10 ? y - 5 : 10);
+
+              currentFrameObjects.add(p.class);
+
+              if (!seenObjects.has(p.class)) {
+                const aspectRatio = (w / h).toFixed(2);
+                const color = getAverageColor(ctx, x, y, w, h);
+
+                // For now, brand detection is not available
+                const brand = "Unknown"; 
+                const brightness = (parseInt(color.match(/\d+/g)[0]) + parseInt(color.match(/\d+/g)[1]) + parseInt(color.match(/\d+/g)[2])) / 3;
+                const panelType = findPanelType(brightness);
+                const issueCatagory=CharColor(color);
+
+                detectionLog.push({
+                  object: p.class,
+                  confidence: p.score,
+                  box: p.bbox,
+                  aspectRatio: aspectRatio,
+                  dominantColor: color,
+                  brand: brand,
+                  panelType: panelType,
+                  issueCatagory: issueCatagory,
+                  timestamp: new Date().toISOString()
+                });
+
+                console.log("📌 Logged TV:", { color, aspectRatio, panelType, issueCatagory,brand});
+          
+              }
+            }
+          });
+
+          seenObjects = currentFrameObjects;
+        } catch (error) {
+          console.error("Detection error:", error);
+        }
+        
+        requestAnimationFrame(detect);
+      }
+      detect();
+    }
+    main();
+
+    // Export detections to JSON
+    function exportData() {
+      const dataStr = "data:text/json;charset=utf-8," +
+        encodeURIComponent(JSON.stringify(detectionLog, null, 2));
+      const dl = document.createElement("a");
+      dl.setAttribute("href", dataStr);
+      dl.setAttribute("download", "detections.json");
+      dl.click();
+    }
+  </script>
+</body>
+</html>
